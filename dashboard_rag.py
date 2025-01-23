@@ -1,26 +1,71 @@
 import streamlit as st
-import subprocess
+from streamlit.components.v1 import html
 import json
 import altair as alt
 import pandas as pd
-import os
 
-# On retrouve les mêmes 10 questions (pour info ou vérif).
 QUESTIONS = [
     "Quel est le délai dans lequel le prestataire doit mettre à disposition des données de consommation et de facturation, selon les dispositions du contrat ?",
     "Quels sont les éléments nécessaires pour que le Délégataire réclame les autorisations et arrêtés dont il a eu connaissance de l'existence, mais dont il n'a pas déjà copie ?",
-    "Quelle est la reference du marché pour le Marché public pour la fourniture et l’acheminement en Gaz naturel et services associés ?",
+    "Quelle est la reference du marché pour le Marché public pour la fourniture et l'acheminement en Gaz naturel et services associés ?",
     "Quels sont les principaux documents à prendre en compte lors de la définition des besoins et de la passation d'un marché public pour un membre du groupement ?",
     "Quels sont les formalités à respecter pour informer les sous-traitants des obligations de confidentialité et/ou des mesures de sécurité dans le cadre du marché ?",
-    "Quelles sont les conditions selon lesquelles le Délégataire peut se porter candidat aux consultations lancées par l’Autorité Délégante ?",
+    "Quelles sont les conditions selon lesquelles le Délégataire peut se porter candidat aux consultations lancées par l'Autorité Délégante ?",
     "Quelle est la périodicité de la révision des prix dans le cadre d'un marché où les prix sont révisés à chaque anniversaire de la date de notification du marché ?",
 ]
+
+def calculate_f1(scores, threshold=3):
+    true_positives = sum(1 for score in scores if score >= threshold)
+    false_negatives = sum(1 for score in scores if score < threshold)
+    total = len(scores)
+    
+    precision = true_positives / total if total > 0 else 0
+    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+    
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    return f1
+
+def load_data():
+    with open('no_rag_results.json', 'r') as f:
+        no_rag_results = json.load(f)
+    with open('rag_results.json', 'r') as f:
+        rag_results = json.load(f)
+    
+    result_map = {}
+    for item in no_rag_results:
+        q = item["question"]
+        ans = item["answer"]
+        result_map[q] = {
+            "no_rag_answer": ans,
+            "rag_answer": None,
+            "rag_chunks": []
+        }
+
+    for item in rag_results:
+        q = item["question"]
+        ans = item["answer"]
+        cks = item.get("chunks", [])
+        if q not in result_map:
+            result_map[q] = {
+                "no_rag_answer": None,
+                "rag_answer": ans,
+                "rag_chunks": cks
+            }
+        else:
+            result_map[q]["rag_answer"] = ans
+            result_map[q]["rag_chunks"] = cks
+    
+    return result_map
 
 def main():
     st.set_page_config(page_title="Dashboard Comparaison RAG", layout="wide")
     st.title("Comparaison Réponses SANS RAG vs. AVEC RAG")
 
-    # Section méthodologique
+    if 'no_rag_scores' not in st.session_state:
+        st.session_state.no_rag_scores = [3] * len(QUESTIONS)
+    if 'rag_scores' not in st.session_state:
+        st.session_state.rag_scores = [4] * len(QUESTIONS)
+
     st.sidebar.title("Méthodologie")
     st.sidebar.markdown("""
     **RAG (Retrieval-Augmented Generation)** combine un mécanisme de récupération d'informations pertinentes avec un modèle de langage génératif.
@@ -31,137 +76,122 @@ def main():
     Ce tableau de bord compare ces deux approches sur un ensemble fixe de questions.
     """)
 
-    if st.button("Lancer l'évaluation sur les questions"):
-        with st.spinner("Exécution des scripts ou chargement des résultats..."):
-            no_rag_results = []
-            rag_results = []
+    result_map = load_data()
 
-            # Vérifier si les scripts existent
-            no_rag_script_exists = os.path.exists('no_rag_test.py')
-            rag_script_exists = os.path.exists('rag_test.py')
+    for i, q in enumerate(QUESTIONS):
+        pair = result_map.get(q)
+        if not pair:
+            continue
+        st.subheader(f"Question : {q}")
+        
+        col1, col2 = st.columns(2)
 
-            # Vérifier si les fichiers JSON existent
-            no_rag_json_exists = os.path.exists('no_rag_results.json')
-            rag_json_exists = os.path.exists('rag_results.json')
+        with col1:
+            st.write("### Sans RAG")
+            st.write(pair["no_rag_answer"])
+            st.session_state.no_rag_scores[i] = st.slider(f"Notez cette réponse sans RAG (0-5)", 0, 5, st.session_state.no_rag_scores[i], key=f"no_rag_{i}")
 
-            # Traitement pour no_rag
-            if no_rag_script_exists:
-                no_rag_proc = subprocess.run(
-                    ["python", "no_rag_test.py"],
-                    capture_output=True, text=True
-                )
-                if no_rag_proc.returncode == 0:
-                    no_rag_results = json.loads(no_rag_proc.stdout)
-                else:
-                    st.error(f"Erreur dans no_rag_test.py : {no_rag_proc.stderr}")
-            elif no_rag_json_exists:
-                with open('no_rag_results.json', 'r') as f:
-                    no_rag_results = json.load(f)
-            else:
-                st.error("Ni le script no_rag_test.py ni le fichier no_rag_results.json n'ont été trouvés.")
-
-            # Traitement pour rag
-            if rag_script_exists:
-                rag_proc = subprocess.run(
-                    ["python", "rag_test.py"],
-                    capture_output=True, text=True
-                )
-                if rag_proc.returncode == 0:
-                    rag_results = json.loads(rag_proc.stdout)
-                else:
-                    st.error(f"Erreur dans rag_test.py : {rag_proc.stderr}")
-            elif rag_json_exists:
-                with open('rag_results.json', 'r') as f:
-                    rag_results = json.load(f)
-            else:
-                st.error("Ni le script rag_test.py ni le fichier rag_results.json n'ont été trouvés.")
-
-        # 4) Construire un dict question -> (réponse_sans_rag, réponse_avec_rag, rag_chunks)
-        result_map = {}
-        for item in no_rag_results:
-            q = item["question"]
-            ans = item["answer"]
-            result_map[q] = {
-                "no_rag_answer": ans,
-                "rag_answer": None,
-                "rag_chunks": []
-            }
-
-        for item in rag_results:
-            q = item["question"]
-            ans = item["answer"]
-            cks = item.get("chunks", [])
-            if q not in result_map:
-                result_map[q] = {
-                    "no_rag_answer": None,
-                    "rag_answer": ans,
-                    "rag_chunks": cks
-                }
-            else:
-                result_map[q]["rag_answer"] = ans
-                result_map[q]["rag_chunks"] = cks
-
-        # 5) Affichage comparatif avec évaluation qualitative
-        st.subheader("Comparaison des réponses")
-        for q in QUESTIONS:
-            pair = result_map.get(q)
-            if not pair:
-                continue
-            st.subheader(f"Question : {q}")
+        with col2:
+            st.write("### Avec RAG")
+            st.write(pair["rag_answer"])
+            st.session_state.rag_scores[i] = st.slider(f"Notez cette réponse avec RAG (0-5)", 0, 5, st.session_state.rag_scores[i], key=f"rag_{i}")
             
-            col1, col2 = st.columns(2)
+            st.write("Chunks retrouvés :")
+            for j, chunk_text in enumerate(pair["rag_chunks"]):
+                st.markdown(f"**Chunk {j+1}:**")
+                st.write(chunk_text)
 
-            with col1:
-                st.write("### Sans RAG")
-                st.write(pair["no_rag_answer"])
-                note_no_rag = st.slider(f"Notez cette réponse sans RAG (0-5) pour '{q}'", 0, 5, 3)
+        st.markdown("---")
+        
+    # 6) Calcul d'une métrique simple (par exemple la longueur de la réponse)
+    question_labels = []
+    len_no_rag = []
+    len_rag = []
+    for q in QUESTIONS:
+        if q in result_map:
+            ans_no_rag = result_map[q].get("no_rag_answer") or ""
+            ans_rag = result_map[q].get("rag_answer") or ""
+            question_labels.append(q[:30] + "...")  # tronque pour affichage
+            len_no_rag.append(len(ans_no_rag))
+            len_rag.append(len(ans_rag))
 
-            with col2:
-                st.write("### Avec RAG")
-                st.write(pair["rag_answer"])
-                note_rag = st.slider(f"Notez cette réponse avec RAG (0-5) pour '{q}'", 0, 5, 4)
-                
-                # On affiche les chunks retrouvés
-                st.write("Chunks retrouvés :")
-                for i, chunk_text in enumerate(pair["rag_chunks"]):
-                    st.markdown(f"**Chunk {i+1}:**")
-                    st.write(chunk_text)
+    # Préparer les données pour Altair
+    data = pd.DataFrame({
+        "Question": question_labels,
+        "Longueur Sans RAG": len_no_rag,
+        "Longueur Avec RAG": len_rag
+    }).melt("Question", var_name="Type", value_name="Longueur")
+    # Graphique interactif avec Altair
+    st.subheader("Comparaison sur la longueur des réponses")
+    chart = alt.Chart(data).mark_bar().encode(
+        x=alt.X("Question:N", sort=None, axis=alt.Axis(labelAngle=-45)),
+        y="Longueur:Q",
+        color="Type:N",
+        tooltip=["Question", "Type", "Longueur"]
+    ).properties(width=800, height=400)
 
-            st.markdown("---")
+    st.altair_chart(chart, use_container_width=True)
+    
+    # Graphique F1 avec Altair
+    f1_chart_container = st.empty()
 
-        # 6) Calcul d'une métrique simple (par exemple la longueur de la réponse)
-        question_labels = []
-        len_no_rag = []
-        len_rag = []
+    def update_f1_chart():
+        no_rag_f1 = calculate_f1(st.session_state.no_rag_scores)
+        rag_f1 = calculate_f1(st.session_state.rag_scores)
+        
+        f1_data = pd.DataFrame({
+            "Méthode": ["Sans RAG", "Avec RAG"],
+            "Score F1": [no_rag_f1, rag_f1]
+        })
 
-        for q in QUESTIONS:
-            if q in result_map:
-                ans_no_rag = result_map[q].get("no_rag_answer") or ""
-                ans_rag = result_map[q].get("rag_answer") or ""
-                question_labels.append(q[:30] + "...")  # tronque pour affichage
-                len_no_rag.append(len(ans_no_rag))
-                len_rag.append(len(ans_rag))
+        f1_chart = alt.Chart(f1_data).mark_bar().encode(
+            x=alt.X("Méthode:N", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("Score F1:Q", scale=alt.Scale(domain=[0, 1])),
+            color=alt.Color("Méthode:N", scale=alt.Scale(domain=["Sans RAG", "Avec RAG"], range=["#1f77b4", "#ff7f0e"])),
+            tooltip=["Méthode", "Score F1"]
+        ).properties(width=600, height=400, title="Comparaison des Scores F1")
 
-        # Préparer les données pour Altair
-        data = pd.DataFrame({
-            "Question": question_labels,
-            "Longueur Sans RAG": len_no_rag,
-            "Longueur Avec RAG": len_rag
-        }).melt("Question", var_name="Type", value_name="Longueur")
+        f1_chart_container.altair_chart(f1_chart, use_container_width=True)
 
-        # Graphique interactif avec Altair
-        st.subheader("Comparaison sur la longueur des réponses")
-        chart = alt.Chart(data).mark_bar().encode(
-            x=alt.X("Question:N", sort=None, axis=alt.Axis(labelAngle=-45)),
-            y="Longueur:Q",
-            color="Type:N",
-            tooltip=["Question", "Type", "Longueur"]
-        ).properties(width=800, height=400)
+    update_f1_chart()
 
-        st.altair_chart(chart, use_container_width=True)
+    # Composant JavaScript pour mise à jour en temps réel
+    html_content = """
+    <script>
+    function updateF1Scores() {
+        const noRagScores = %s;
+        const ragScores = %s;
+        
+        function calculateF1(scores) {
+            const truePositives = scores.filter(score => score >= 3).length;
+            const falseNegatives = scores.filter(score => score < 3).length;
+            const total = scores.length;
+            
+            const precision = total > 0 ? truePositives / total : 0;
+            const recall = (truePositives + falseNegatives) > 0 ? truePositives / (truePositives + falseNegatives) : 0;
+            
+            return (precision + recall) > 0 ? 2 * (precision * recall) / (precision + recall) : 0;
+        }
+        
+        const noRagF1 = calculateF1(noRagScores);
+        const ragF1 = calculateF1(ragScores);
+        
+        Streamlit.setComponentValue({
+            noRagF1: noRagF1,
+            ragF1: ragF1
+        });
+    }
+    
+    // Mettre à jour les scores toutes les 100ms
+    setInterval(updateF1Scores, 100);
+    </script>
+    """ % (json.dumps(st.session_state.no_rag_scores), json.dumps(st.session_state.rag_scores))
 
-        st.success("Évaluation terminée !")
+    html(html_content, height=0)
 
+    # Callback pour mettre à jour le graphique
+    if st.session_state.get('noRagF1') is not None and st.session_state.get('ragF1') is not None:
+        update_f1_chart()
 
 if __name__ == "__main__":
     main()
